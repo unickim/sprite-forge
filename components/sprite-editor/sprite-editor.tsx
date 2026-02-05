@@ -455,6 +455,7 @@ export function SpriteEditor() {
             activeLayerId={activeLayerId}
             onLayerUpdate={handleLayerUpdate}
             onHistoryPush={handleHistoryPush}
+            onColorPick={handleColorChange}
           />
 
           {/* Timeline */}

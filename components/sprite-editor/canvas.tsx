@@ -16,6 +16,7 @@ interface CanvasProps {
   activeLayerId: string
   onLayerUpdate: (layerId: string, imageData: ImageData) => void
   onHistoryPush: () => void
+  onColorPick?: (color: string) => void
 }
 
 interface Layer {
@@ -39,8 +40,10 @@ export function Canvas({
   activeLayerId,
   onLayerUpdate,
   onHistoryPush,
+  onColorPick,
 }: CanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const compositeRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [isDrawing, setIsDrawing] = useState(false)
@@ -77,6 +80,9 @@ export function Canvas({
       const activeLayer = layers.find((l) => l.id === activeLayerId)
       if (!activeLayer || activeLayer.locked || !activeLayer.visible) return
 
+      const composite = compositeRef.current
+      const compositeCtx = composite?.getContext("2d")
+
       const halfSize = Math.floor(brushSize / 2)
       for (let i = -halfSize; i <= halfSize; i++) {
         for (let j = -halfSize; j <= halfSize; j++) {
@@ -85,9 +91,20 @@ export function Canvas({
           if (px >= 0 && px < width && py >= 0 && py < height) {
             if (erase) {
               ctx.clearRect(px, py, 1, 1)
+              // Also update composite canvas in real-time
+              if (compositeCtx) {
+                compositeCtx.clearRect(px, py, 1, 1)
+              }
             } else {
               ctx.fillStyle = currentColor
               ctx.fillRect(px, py, 1, 1)
+              // Also update composite canvas in real-time
+              if (compositeCtx) {
+                compositeCtx.globalAlpha = activeLayer.opacity / 100
+                compositeCtx.fillStyle = currentColor
+                compositeCtx.fillRect(px, py, 1, 1)
+                compositeCtx.globalAlpha = 1
+              }
             }
           }
         }
@@ -182,6 +199,33 @@ export function Canvas({
     [currentColor, height, width]
   )
 
+  // Render composite of all layers
+  const renderComposite = useCallback(() => {
+    const composite = compositeRef.current
+    if (!composite) return
+    const ctx = composite.getContext("2d")
+    if (!ctx) return
+
+    ctx.clearRect(0, 0, width, height)
+
+    // Render layers from bottom to top (reverse order)
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const layer = layers[i]
+      if (!layer.visible || !layer.imageData) continue
+
+      ctx.globalAlpha = layer.opacity / 100
+      const tempCanvas = document.createElement("canvas")
+      tempCanvas.width = width
+      tempCanvas.height = height
+      const tempCtx = tempCanvas.getContext("2d")
+      if (!tempCtx) continue
+
+      tempCtx.putImageData(layer.imageData, 0, 0)
+      ctx.drawImage(tempCanvas, 0, 0)
+    }
+    ctx.globalAlpha = 1
+  }, [layers, width, height])
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (e.button === 1 || (e.button === 0 && e.altKey)) {
@@ -210,6 +254,16 @@ export function Canvas({
         floodFill(ctx, pos.x, pos.y)
         const imageData = ctx.getImageData(0, 0, width, height)
         onLayerUpdate(activeLayerId, imageData)
+        renderComposite()
+      } else if (currentTool === "eyedropper") {
+        const imageData = ctx.getImageData(pos.x, pos.y, 1, 1)
+        const [r, g, b, a] = imageData.data
+        if (a > 0 && onColorPick) {
+          const hex = `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`
+          onColorPick(hex)
+        }
+        setIsDrawing(false)
+        return
       }
     },
     [
@@ -221,8 +275,10 @@ export function Canvas({
       height,
       onHistoryPush,
       onLayerUpdate,
+      onColorPick,
       pan,
       width,
+      renderComposite,
     ]
   )
 
@@ -310,6 +366,12 @@ export function Canvas({
     }
   }, [height, width])
 
+  // Render composite whenever layers change
+  useEffect(() => {
+    renderComposite()
+  }, [renderComposite])
+
+  // Initialize active layer canvas with current imageData
   useEffect(() => {
     const activeLayer = layers.find((l) => l.id === activeLayerId)
     if (!activeLayer?.imageData) return
@@ -352,29 +414,36 @@ export function Canvas({
           }}
         />
 
-        {/* Layer canvases */}
-        {layers.map((layer) => (
-          <canvas
-            key={layer.id}
-            ref={layer.id === activeLayerId ? canvasRef : undefined}
-            width={width}
-            height={height}
-            className={`absolute top-0 left-0 ${
-              layer.id === activeLayerId ? "z-10" : "z-0"
-            }`}
-            style={{
-              width: width * zoom,
-              height: height * zoom,
-              imageRendering: "pixelated",
-              opacity: layer.visible ? layer.opacity / 100 : 0,
-              display: layer.visible ? "block" : "none",
-            }}
-            onMouseDown={layer.id === activeLayerId ? handleMouseDown : undefined}
-            onMouseMove={layer.id === activeLayerId ? handleMouseMove : undefined}
-            onMouseUp={layer.id === activeLayerId ? handleMouseUp : undefined}
-            onMouseLeave={layer.id === activeLayerId ? handleMouseLeave : undefined}
-          />
-        ))}
+        {/* Composite canvas - shows all layers combined */}
+        <canvas
+          ref={compositeRef}
+          width={width}
+          height={height}
+          className="absolute top-0 left-0 z-10"
+          style={{
+            width: width * zoom,
+            height: height * zoom,
+            imageRendering: "pixelated",
+          }}
+        />
+
+        {/* Invisible drawing canvas for active layer */}
+        <canvas
+          ref={canvasRef}
+          width={width}
+          height={height}
+          className="absolute top-0 left-0 z-20"
+          style={{
+            width: width * zoom,
+            height: height * zoom,
+            imageRendering: "pixelated",
+            opacity: 0,
+          }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
+        />
 
         {/* Overlay for cursor preview */}
         <canvas
